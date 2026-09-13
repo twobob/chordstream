@@ -52,6 +52,9 @@ TEMPLATES = [
 ]
 MISS_PENALTY = 0.12
 EXTRA_TONE_PENALTY = 0.06
+
+TUNED = dict(extra_penalty=0.25, power_fallback=True, key_window=16, key_hold=6, key_profile="pop")
+_OPTS = {"extra_penalty": EXTRA_TONE_PENALTY}
 BASS_ROOT_BONUS = 0.08
 MELODY_PITCH, MELODY_WEIGHT = 72, 0.6
 MIN_SEGMENT_WEIGHT = 1e-6
@@ -314,7 +317,11 @@ KS_MAJ = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2
 KS_MIN = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
 _KEY_Z_KS = _zscore(np.array([np.roll(KS_MAJ, t) for t in range(12)]
                              + [np.roll(KS_MIN, t) for t in range(12)]))
-_KEY_TABLES = {"aarden": _KEY_Z, "ks": _KEY_Z_KS}
+POP_MAJ = np.array([21.4055, 0.2025, 13.3891, 0.3057, 14.4522, 8.5471, 0.4273, 20.8253, 0.5971, 12.5270, 0.6847, 6.6365])
+POP_MIN = np.array([23.4970, 0.1901, 8.2014, 14.5657, 0.3527, 12.3330, 0.0875, 20.0467, 6.5986, 0.5512, 12.5857, 0.9906])
+_KEY_Z_POP = _zscore(np.array([np.roll(POP_MAJ, t) for t in range(12)]
+                              + [np.roll(POP_MIN, t) for t in range(12)]))
+_KEY_TABLES = {"aarden": _KEY_Z, "ks": _KEY_Z_KS, "pop": _KEY_Z_POP}
 
 
 def _key_scores(h, profile="aarden"):
@@ -423,11 +430,11 @@ def estimate_keys(notes, bars, window=8, hold=4, global_prior=0.05, evidence=Non
 _T = len(TEMPLATES)
 _FIT_M = np.zeros((12 * _T, 12))
 _FIT_ROOT = np.repeat(np.arange(12), _T)
-_FIT_EXTRA = np.zeros(12 * _T)
+_FIT_EXTRA_TONES = np.zeros(12 * _T)
 for _r in range(12):
     for _ti, (_, _iv) in enumerate(TEMPLATES):
         _FIT_M[_r * _T + _ti, [(_r + i) % 12 for i in _iv]] = 1
-        _FIT_EXTRA[_r * _T + _ti] = EXTRA_TONE_PENALTY * max(0, len(_iv) - 3)
+        _FIT_EXTRA_TONES[_r * _T + _ti] = max(0, len(_iv) - 3)
 
 
 def fit_chord(h, lowest, roots=None):
@@ -435,7 +442,7 @@ def fit_chord(h, lowest, roots=None):
     if tot < MIN_SEGMENT_WEIGHT:
         return None
     w = h / tot
-    s = 2 * (_FIT_M @ w) - 1 - MISS_PENALTY * (_FIT_M @ (w < 0.03)) - _FIT_EXTRA
+    s = 2 * (_FIT_M @ w) - 1 - MISS_PENALTY * (_FIT_M @ (w < 0.03)) - _OPTS["extra_penalty"] * _FIT_EXTRA_TONES
     if lowest < 128:
         s = s + BASS_ROOT_BONUS * (_FIT_ROOT == lowest % 12)
     if roots is not None:
@@ -580,12 +587,12 @@ def remi_times(ids, tokenizer, with_notes=False):
         if typ in ("Pitch", "PitchDrum", "Velocity", "Duration", "PitchBend", "Pedal"):
             break
 
-    def meter(n, d):
+    def metre(n, d):
         tpb = tokenizer._tpb_per_ts[d]
         return (compute_ticks_per_bar(TimeSignature(0, n, d), tpq), tpb,
                 tpb // cfg.max_num_pos_per_beat)
 
-    ticks_per_bar, tpb, ticks_per_pos = meter(num, den)
+    ticks_per_bar, tpb, ticks_per_pos = metre(num, den)
     tick = at_bar = at_ts = 0
     bar, bar_at_ts, note_end = -1, 0, 0
     out = np.zeros(len(ids), dtype=np.float64)
@@ -626,7 +633,7 @@ def remi_times(ids, tokenizer, with_notes=False):
                 if (n2, d2) != (num, den):
                     num, den = n2, d2
                     at_ts, bar_at_ts = at_bar, bar
-                    ticks_per_bar, tpb, ticks_per_pos = meter(num, den)
+                    ticks_per_bar, tpb, ticks_per_pos = metre(num, den)
             j += 1
         out[k] = tick * 4.0 / tpq
     out[n_music:] = out[n_music - 1] if n_music else 0.0
@@ -698,13 +705,19 @@ TRIAD_OF = {i: (0 if name == "add9" else 1) for i, (name, _) in enumerate(TEMPLA
 
 
 def encode_notes(notes, ts, smooth=False, merge_root=True, pedal=True, melody=True, solo=True,
-                 key_evidence="closure", add9=False, key_profile="aarden", key_hist="notes"):
+                 key_evidence="closure", add9=False, key_profile="aarden", key_hist="notes",
+                 extra_penalty=EXTRA_TONE_PENALTY, power_fallback=False, key_window=8, key_hold=4,
+                 tuned=False):
     if not notes:
         return []
     if key_evidence not in ("none", "root_bass", "closure"):
         raise ValueError(f"key_evidence must be none, root_bass or closure, not {key_evidence!r}")
-    if key_profile not in ("aarden", "ks") or key_hist not in ("notes", "chords"):
-        raise ValueError(f"key_profile must be aarden or ks and key_hist notes or chords")
+    if tuned:
+        extra_penalty, power_fallback = TUNED["extra_penalty"], TUNED["power_fallback"]
+        key_window, key_hold, key_profile = TUNED["key_window"], TUNED["key_hold"], TUNED["key_profile"]
+    if key_profile not in _KEY_TABLES or key_hist not in ("notes", "chords"):
+        raise ValueError(f"key_profile must be aarden, ks or pop and key_hist notes or chords")
+    _OPTS["extra_penalty"] = extra_penalty
     melody_mode = mark_melody(notes) if melody else None
     end = max(n.end for n in notes)
     bars = bar_grid(ts, end)
@@ -737,7 +750,7 @@ def encode_notes(notes, ts, smooth=False, merge_root=True, pedal=True, melody=Tr
 
     evidence = None if key_evidence == "none" else _key_evidence(
         segs, chords, low, len(bars), closure=key_evidence == "closure")
-    keys = estimate_keys(notes, bars, evidence=evidence, profile=key_profile,
+    keys = estimate_keys(notes, bars, window=key_window, hold=key_hold, evidence=evidence, profile=key_profile,
                          hist=_chord_tone_histogram(segs, chords, len(bars)) if key_hist == "chords" else None)
     if keys is None:
         return []
@@ -782,6 +795,19 @@ def encode_notes(notes, ts, smooth=False, merge_root=True, pedal=True, melody=Tr
                 if not add9 and ti in TRIAD_OF:
                     ti = TRIAD_OF[ti]
                 c = (root, ti, (lo % 12 - root) % 12 if lo < 128 else 0)
+        if power_fallback and c is not None and c != SOLO and c[1] == 5:
+            h = hfit[i:j + 1].sum(0)
+            root = c[0]
+            maj3, min3 = h[(root + 4) % 12], h[(root + 3) % 12]
+            if maj3 > min3 + 1e-9:
+                ti = 0
+            elif min3 > maj3 + 1e-9:
+                ti = 1
+            else:
+                degree = (root - tonic) % 12
+                minor_third = (degree in (0, 2, 5, 7)) if mode else (degree in (2, 4, 9, 11))
+                ti = 1 if minor_third else 0
+            c = (root, ti, c[2])
         if c is None:
             degree, mask, bass, label = NC_DEGREE, 0, 0, "N.C."
         elif c == SOLO:
@@ -943,6 +969,9 @@ def main():
     enc.add_argument("--beat-level", action="store_true",
                      help="keep one token per chord step: don't merge consecutive steps on the "
                           "same root (Cm, Cm7, Cmadd9 stay separate)")
+    enc.add_argument("--tuned", action="store_true",
+                     help="the tuned configuration: stronger seventh penalty, power chords named as "
+                          "triads, 16-bar key window with 6 bars of hysteresis, pop key profiles")
     enc.add_argument("--smooth", action="store_true",
                      help="absorb one-step chords between two identical chords (off by default: "
                           "it erased real harmony at no measured gain)")
@@ -962,7 +991,7 @@ def main():
     if (a.windows is not None and a.windows < 1) or (a.stride is not None and a.stride < 1):
         ap.error("--windows SIZE and --stride STRIDE must be positive integers")
     opts = dict(smooth=a.smooth, merge_root=not a.beat_level, pedal=not a.no_pedal,
-                melody=not a.no_melody, add9=a.add9, key_evidence=a.key_evidence)
+                melody=not a.no_melody, add9=a.add9, key_evidence=a.key_evidence, tuned=a.tuned)
     for p in a.midi:
         toks = encode(p, **opts)
         assert all(unpack(t.packed).packed == t.packed for t in toks)
