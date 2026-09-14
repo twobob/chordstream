@@ -135,6 +135,34 @@ Two 32-bit words, `a | (b << 32)`, least significant bit first:
 | | cont | 1 | continues a chord split by the extractor |
 | | reserved | 1 | zero, so every token is also a valid signed 64-bit integer |
 
+## Hearing the chords: jenny and midimix
+
+Two companion tools turn a token stream back into music. [jenny](https://github.com/twobob/jenny)
+reads ChordStream's token table and writes the chords as a MIDI file, optionally arpeggiated;
+[midimix](https://github.com/twobob/midimix) merges MIDI files into one, so the chords can be heard
+against the original.
+
+`tools\fetch_tools.bat` downloads the latest release of each into `tools\`. The executables are not
+kept in this repository.
+
+`test\octet_in_Dminor.mid` is a short example. Build `chordstream.exe` in the repository root, then
+run from `tools`, so that the MIDI files it writes stay there:
+
+```
+cd tools
+fetch_tools.bat
+cmd /c "..\chordstream.exe --keep-add9 ..\test\octet_in_Dminor.mid | .\jenny.exe --rate 16 --arp randomonce -o chords.mid --vel 120 | .\midimix.exe -o randomonce16.mid ..\test\octet_in_Dminor.mid chords.mid"
+```
+
+```
+jenny: 97 chords, 1043 notes -> chords.mid
+midimix: 9 + 1 tracks -> randomonce16.mid
+```
+
+`tools\randomonce16.mid` is the octet with its extracted chords added as a sixteenth-note arpeggio in
+random order. Keep the `.\` before `jenny.exe` and `midimix.exe`: some Windows configurations do not
+search the current folder for programs.
+
 ## Licence
 
 MIT License
