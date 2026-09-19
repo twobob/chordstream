@@ -1,4 +1,4 @@
-# ChordStream 0.2
+# ChordStream 0.3
 
 ChordStream is a compact symbolic representation of harmony for training music models: one 64-bit
 token per chord change or silence, carrying the key, the chord's degree relative to that key, its
@@ -13,7 +13,17 @@ re-implemented from it alone, and two implementations of it:
 * `chordstream.c`, a single-file C implementation using only the standard library, which reproduces
   the Python token for token under `--ref` and is several times faster
 
-## What is new in 0.2
+## What is new in 0.3
+
+A bugfix, and an update to the Python reference.
+
+* The bass test now uses the position tolerance the C implementation already used: `0.25 * step -
+  1e-6` instead of `0.25 * step`. A note lying wholly inside a step can compute its overlap as
+  0.9999999999999998 of that step, and the reference then dropped basses the C kept.
+* The difference can propagate: the bass feeds the chord fitting's root bonus, so the degree, the
+  pitch-class mask and the token count can follow it.
+
+## What was new in 0.2
 
 * The C implementation.
 * A tuned configuration in both implementations (below), measured on held-out test sets.

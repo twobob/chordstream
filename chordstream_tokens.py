@@ -15,13 +15,11 @@ from mido.midifiles import meta as _meta
 
 _ks_decode = _meta.MetaSpec_key_signature.decode
 
-
 def _ks_decode_lenient(self, message, data):
     try:
         _ks_decode(self, message, data)
     except _meta.KeySignatureError:
         message.key = "C"
-
 
 _meta.MetaSpec_key_signature.decode = _ks_decode_lenient
 
@@ -59,7 +57,6 @@ BASS_ROOT_BONUS = 0.08
 MELODY_PITCH, MELODY_WEIGHT = 72, 0.6
 MIN_SEGMENT_WEIGHT = 1e-6
 
-
 @dataclass
 class Note:
     start: float
@@ -67,7 +64,6 @@ class Note:
     pitch: int
     voice: tuple = ()
     melody: bool = False
-
 
 @dataclass
 class Token:
@@ -113,7 +109,6 @@ class Token:
     def root_pc(self):
         return None if self.is_nc else (self.tonic + self.degree) % 12
 
-
 def unpack(v):
     v = int(v)
     a, b = v & 0xFFFFFFFF, v >> 32
@@ -121,16 +116,13 @@ def unpack(v):
                  bass=a >> 20 & 15, barlen=(a >> 24 & 63) + 1, bar=b & 0xFFFF,
                  onset=b >> 16 & 63, dur=b >> 22 & 255, cont=b >> 30 & 1)
 
-
 def unpack_stream(values):
     return [unpack(v) for v in values]
-
 
 try:
     import symusic
 except ImportError:
     symusic = None
-
 
 def load(path):
     if symusic is not None:
@@ -140,10 +132,8 @@ def load(path):
             pass
     return _load_mido(path)
 
-
 def _load_symusic(path):
     return score_notes(symusic.Score(str(path)))
-
 
 def score_notes(score):
     q = 4.0 / score.ticks_per_quarter
@@ -157,13 +147,11 @@ def score_notes(score):
     ts = [(t.time * q, t.numerator, t.denominator) for t in score.time_signatures]
     return notes, _clean_ts(ts)
 
-
 def _clean_ts(ts):
     ts = sorted({p: (p, n, d) for p, n, d in sorted(ts) if n > 0 and d > 0}.values()) or [(0.0, 4, 4)]
     if ts[0][0] > 0:
         ts.insert(0, (0.0, 4, 4))
     return ts
-
 
 def _load_mido(path):
     mid = mido.MidiFile(path)
@@ -185,9 +173,7 @@ def _load_mido(path):
                         notes.append(Note(s * q, now * q, msg.note, (ti, msg.channel)))
     return notes, _clean_ts(ts)
 
-
 MELODY_VOICE_WEIGHT = 0.25
-
 
 def mark_melody(notes):
     if not notes:
@@ -223,9 +209,8 @@ def mark_melody(notes):
         return "skyline"
     return "voice"
 
-
 MIN_GRID16 = 4
-
+EPSILON = 1e-6
 
 def chord_step(num, den):
     bar = num * 16.0 / den
@@ -238,7 +223,6 @@ def chord_step(num, den):
             step += beat
     return min(step, bar)
 
-
 def clean_meters(ts, end):
     out = []
     for k, (p, num, den) in enumerate(ts):
@@ -248,7 +232,6 @@ def clean_meters(ts, end):
             num, den = 4, 4
         out.append((p, num, den))
     return out
-
 
 def bar_grid(ts, end):
     ts = clean_meters(ts, end)
@@ -264,9 +247,7 @@ def bar_grid(ts, end):
             cur += sub_len
     return bars
 
-
 MAX_BAR16 = 64
-
 
 def _split_bar(num, den):
     if num * 16.0 / den <= MAX_BAR16:
@@ -280,7 +261,6 @@ def _split_bar(num, den):
         k += 1
         base, extra = divmod(num, k)
     return [base + 1] * extra + [base] * (k - extra)
-
 
 def histograms(notes, bounds, bass_boost=True):
     starts = [b[0] for b in bounds]
@@ -299,16 +279,14 @@ def histograms(notes, bounds, bass_boost=True):
                     else:
                         w *= 1.5 if n.pitch < 60 else MELODY_WEIGHT if n.pitch >= MELODY_PITCH else 1.0
                 hist[i, n.pitch % 12] += w
-                if ov >= 0.25 * (b - a):
+                if ov >= 0.25 * (b - a) - EPSILON:
                     low[i] = min(low[i], n.pitch)
             i += 1
     return hist, low
 
-
 def _zscore(x):
     x = x - x.mean(-1, keepdims=True)
     return x / np.sqrt((x * x).sum(-1, keepdims=True))
-
 
 _KEY_Z = _zscore(np.array([np.roll(AARDEN_MAJ, t) for t in range(12)]
                           + [np.roll(AARDEN_MIN, t) for t in range(12)]))
@@ -323,7 +301,6 @@ _KEY_Z_POP = _zscore(np.array([np.roll(POP_MAJ, t) for t in range(12)]
                               + [np.roll(POP_MIN, t) for t in range(12)]))
 _KEY_TABLES = {"aarden": _KEY_Z, "ks": _KEY_Z_KS, "pop": _KEY_Z_POP}
 
-
 def _key_scores(h, profile="aarden"):
     if h.sum() <= 0:
         return None
@@ -332,7 +309,6 @@ def _key_scores(h, profile="aarden"):
     if norm == 0:
         return np.full(24, np.nan)
     return _KEY_TABLES[profile] @ (hz / norm)
-
 
 def _resolve_relative(scores, h, k, ev=None):
     rel = (k + 9) % 12 + 12 if k < 12 else (k - 12 + 3) % 12
@@ -346,9 +322,7 @@ def _resolve_relative(scores, h, k, ev=None):
     leading, subtonic = h[(t + 11) % 12], h[(t + 10) % 12]
     return minor if leading > subtonic else major
 
-
 CLOSURE_INTERVALS = (5, 7, 10)
-
 
 def _key_evidence(segs, chords, low, n_bars, closure):
     ev = np.zeros((n_bars, 12))
@@ -375,7 +349,6 @@ def _key_evidence(segs, chords, low, n_bars, closure):
                     ev[bi, r] += d
     return ev
 
-
 def _chord_tone_histogram(segs, chords, n_bars):
     h = np.zeros((n_bars, 12))
     for (a, b, bi), c in zip(segs, chords):
@@ -385,7 +358,6 @@ def _chord_tone_histogram(segs, chords, n_bars):
         for iv in TEMPLATES[ti][1]:
             h[bi, (root + iv) % 12] += b - a
     return h
-
 
 def estimate_keys(notes, bars, window=8, hold=4, global_prior=0.05, evidence=None,
                   profile="aarden", hist=None):
@@ -426,7 +398,6 @@ def estimate_keys(notes, bars, window=8, hold=4, global_prior=0.05, evidence=Non
         keys.append(cur)
     return keys
 
-
 _T = len(TEMPLATES)
 _FIT_M = np.zeros((12 * _T, 12))
 _FIT_ROOT = np.repeat(np.arange(12), _T)
@@ -435,7 +406,6 @@ for _r in range(12):
     for _ti, (_, _iv) in enumerate(TEMPLATES):
         _FIT_M[_r * _T + _ti, [(_r + i) % 12 for i in _iv]] = 1
         _FIT_EXTRA_TONES[_r * _T + _ti] = max(0, len(_iv) - 3)
-
 
 def fit_chord(h, lowest, roots=None):
     tot = h.sum()
@@ -450,7 +420,6 @@ def fit_chord(h, lowest, roots=None):
     k = int(np.argmax(s >= s.max() - 1e-9))
     return int(_FIT_ROOT[k]), k % _T
 
-
 def _mask(iv):
     m = 0
     for i in iv:
@@ -458,13 +427,11 @@ def _mask(iv):
             m |= 1 << (i - 1)
     return m
 
-
 NO_ABSORB_DEGREES = frozenset((7, 11))
 _ABSORB_HIT = Counter()
 _ABSORB_KEPT = Counter()
 
 PEDAL_MIN16 = 32
-
 
 def _pedal_refit(notes, segs, bars, hfit, low, chords):
     srt = sorted(notes, key=lambda n: n.start)
@@ -503,7 +470,6 @@ def _pedal_refit(notes, segs, bars, hfit, low, chords):
                     chords[k] = (root, ti, (pitch % 12 - root) % 12)
         i = j + 1
 
-
 def _mark_solo(notes, segs, chords, melody_mode):
     bounds = [(a, b) for a, b, _ in segs]
     if melody_mode == "voice":
@@ -527,17 +493,13 @@ def _mark_solo(notes, segs, chords, melody_mode):
         if all(y.start >= x.end - 0.5 for x, y in zip(ns, ns[1:])):
             chords[i] = SOLO
 
-
 def encode(path, **opts):
     return encode_notes(*load(path), **opts)
-
 
 def encode_score(score, **opts):
     return encode_notes(*score_notes(score), **opts)
 
-
 REMI_BOS, REMI_EOS, REMI_FIRST_MUSIC_ID = 1, 2, 4
-
 
 def remi_doc_ids(ids):
     d = np.asarray(ids)
@@ -546,13 +508,10 @@ def remi_doc_ids(ids):
     d = d[:cut[0]] if len(cut) else d
     return d[d >= REMI_FIRST_MUSIC_ID].astype(np.int64).tolist()
 
-
 def encode_remi(ids, tokenizer, **opts):
     return encode_score(tokenizer.decode(remi_doc_ids(ids)), **opts)
 
-
 _BASE_CACHE = {}
-
 
 def _base_table(tokenizer):
     key = id(tokenizer)
@@ -561,7 +520,6 @@ def _base_table(tokenizer):
         _BASE_CACHE[key] = [tuple(lookup.get(m.id_to_token(i), ())) if i >= REMI_FIRST_MUSIC_ID else ()
                             for i in range(len(tokenizer))]
     return _BASE_CACHE[key]
-
 
 def remi_times(ids, tokenizer, with_notes=False):
     from miditok.utils import compute_ticks_per_bar
@@ -639,12 +597,10 @@ def remi_times(ids, tokenizer, with_notes=False):
     out[n_music:] = out[n_music - 1] if n_music else 0.0
     return (out, has_note, has_rest) if with_notes else out
 
-
 def chords_between(tokens, t0, t1, closed_end=True):
     if closed_end:
         return [t for t in tokens if t.start16 <= t1 and t.start16 + t.dur > t0]
     return [t for t in tokens if t.start16 < t1 and t.start16 + t.dur > t0]
-
 
 def _window_info(chords, t0):
     first = chords[0] if chords else None
@@ -654,7 +610,6 @@ def _window_info(chords, t0):
         mid_piece=bool(first and (first.bar > 0 or first.onset > 0)),
         clipped=bool(first and first.start16 >= 0 and first.start16 < t0),
     )
-
 
 def windows(stream, size, stride=None, tokenizer=None, **opts):
     stride = stride or size
@@ -699,10 +654,8 @@ def windows(stream, size, stride=None, tokenizer=None, **opts):
         if e >= len(ids):
             break
 
-
 TRIAD_OF = {i: (0 if name == "add9" else 1) for i, (name, _) in enumerate(TEMPLATES)
             if name in ("add9", "madd9")}
-
 
 def encode_notes(notes, ts, smooth=False, merge_root=True, pedal=True, melody=True, solo=True,
                  key_evidence="closure", add9=False, key_profile="aarden", key_hist="notes",
@@ -823,7 +776,6 @@ def encode_notes(notes, ts, smooth=False, merge_root=True, pedal=True, melody=Tr
         tokens.pop()
     return tokens
 
-
 def _emit(tokens, bars, start, stop, tonic, mode, degree, mask, bass, label):
     starts = [b[0] for b in bars]
     cont = 0
@@ -845,20 +797,16 @@ def _emit(tokens, bars, start, stop, tonic, mode, degree, mask, bass, label):
         start += step
         cont = 1
 
-
 def rope_inputs(tokens):
     pos = np.array([t.bar * 16 + t.onset for t in tokens], dtype=np.int32)
     root = np.array([-1 if t.is_nc else t.root_pc for t in tokens], dtype=np.int8)
     tonic = np.array([t.tonic for t in tokens], dtype=np.int8)
     return pos, root, tonic
 
-
 def to_array(tokens):
     return np.array([t.packed for t in tokens], dtype=np.uint64)
 
-
 ROMAN = ["I", "bII", "II", "bIII", "III", "IV", "bV", "V", "bVI", "VI", "bVII", "VII"]
-
 
 def roman(t):
     if t.is_nc:
@@ -866,7 +814,6 @@ def roman(t):
     r = ROMAN[t.degree]
     minorish = t.mask & (1 << 2) and not t.mask & (1 << 3)
     return r.lower() if minorish else r
-
 
 def show(path, tokens, window=None):
     print(f"\n{path}  ({len(tokens)} tokens, {len(tokens) * 8} bytes)")
@@ -884,27 +831,26 @@ def show(path, tokens, window=None):
         print(f"{base + i:>4} {t.bar:>4}.{t.onset:<2} {t.dur:>4}{c} {t.barlen:>3} {key:<4} "
               f"{roman(t):<6} {t.label:<10} {t.packed:#014x}")
 
-
 EPILOG = """\
 examples:
   Encode MIDI files and print every chord token:
-    python chord_tokens.py song.mid other.mid
+    python chordstream_tokens.py song.mid other.mid
 
   Print only tokens 30..41 of a file (a token window):
-    python chord_tokens.py song.mid --window 30 12
+    python chordstream_tokens.py song.mid --window 30 12
 
   Encode documents straight from a REMI training cache (no MIDI file needed):
-    python chord_tokens.py --remi unified_packed_cond.npz --doc 214824 212410
+    python chordstream_tokens.py --remi unified_packed_cond.npz --doc 214824 212410
 
   Cut a REMI document into back-to-back training-style windows of 1024 REMI tokens,
   and print each window's chords:
-    python chord_tokens.py --remi unified_packed_cond.npz --doc 214824 --windows 1024
+    python chordstream_tokens.py --remi unified_packed_cond.npz --doc 214824 --windows 1024
 
   Same, but windows that overlap by half (a new window every 512 tokens):
-    python chord_tokens.py --remi unified_packed_cond.npz --doc 214824 --windows 1024 --stride 512
+    python chordstream_tokens.py --remi unified_packed_cond.npz --doc 214824 --windows 1024 --stride 512
 
   Same, but with melody notes counted at full weight:
-    python chord_tokens.py --remi unified_packed_cond.npz --doc 214824 --windows 1024 --no-melody
+    python chordstream_tokens.py --remi unified_packed_cond.npz --doc 214824 --windows 1024 --no-melody
 
 windowing, in short:
   --windows SIZE    how many REMI tokens each window holds.
@@ -930,7 +876,7 @@ output columns:
 
 def main():
     ap = argparse.ArgumentParser(
-        prog="chord_tokens.py",
+        prog="chordstream_tokens.py",
         description=("ChordStream: one 64-bit token per chord change or silence, carrying key, "
                      "degree, pitch-class mask, bass, bar, onset, bar length and duration."),
         epilog=EPILOG,
@@ -1015,7 +961,6 @@ def main():
                 continue
             toks = encode_remi(stream[int(starts[i]):end], tok, **opts)
             show(f"{a.remi} doc {i}", toks, a.window)
-
 
 if __name__ == "__main__":
     main()
