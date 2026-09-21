@@ -1,4 +1,4 @@
-# ChordStream 0.3
+# ChordStream 0.4
 
 ChordStream is a compact symbolic representation of harmony for training music models: one 64-bit
 token per chord change or silence, carrying the key, the chord's degree relative to that key, its
@@ -13,7 +13,33 @@ re-implemented from it alone, and two implementations of it:
 * `chordstream.c`, a single-file C implementation using only the standard library, which reproduces
   the Python token for token under `--ref` and is several times faster
 
-## What is new in 0.3
+## What is new in 0.4
+
+Two new options, a tighter reference mode, and a Linux build.
+
+* `--serve` keeps one process open for many documents: one notes-JSON document per line on stdin,
+  answered with `#tokens N` and N `--tsv` rows, or `#error` for a line it cannot read.
+* `--debug` writes the stages to stderr: bars (`B`), chord steps (`S`), key winners per bar (`K`) and
+  the whole-piece key (`WHOLE`).
+* `--ref` now follows the Python's arithmetic where the two could still part: sums in the reference's
+  order, a flat key histogram resolved as a relative-key tie, the first key within the tie tolerance,
+  the whole-piece histogram as the sum of the bars, and trailing silence dropped.
+* The default and `--tuned` output is unchanged from 0.3.
+
+Binaries are attached to the [release](https://github.com/twobob/chordstream/releases/tag/v0.4), both
+built from this `chordstream.c`:
+
+| file | built with |
+|---|---|
+| `chordstream.exe` | Windows x64, MSVC 14.43: `cl /nologo /std:c11 /W4 /WX /O2 /Fe:chordstream.exe chordstream.c` |
+| `chordstream-linux-x86_64` | Linux x86-64, gcc 11.4 (Ubuntu 22.04): `gcc -std=c11 -O2 -mavx2 -mfma -Wall -Wextra -o chordstream chordstream.c -lm` |
+
+The Linux binary is pinned to `-mavx2 -mfma`, so it needs a Haswell (2013) or newer CPU; on anything
+older, rebuild on the target machine, or drop those two flags for a build that runs on any x86-64. gcc
+reports one `-Wmissing-field-initializers` warning (`onset_weight`, left at zero), which is benign. Make
+it executable after download (`chmod +x chordstream-linux-x86_64`).
+
+## What was new in 0.3
 
 A bugfix, and an update to the Python reference.
 
@@ -58,11 +84,13 @@ cache and cutting them into windows.
 ## C
 
 ```
-cl /std:c11 /W4 /WX /O2 chordstream.c                                    (MSVC)
-gcc -std=c99 -O2 -Wall -Wextra -pedantic chordstream.c -lm -o chordstream
+cl /nologo /std:c11 /W4 /WX /O2 /Fe:chordstream.exe chordstream.c                      (MSVC)
+gcc -std=c11 -O2 -mavx2 -mfma -Wall -Wextra -o chordstream chordstream.c -lm          (gcc)
 ```
 
-Built and tested with MSVC 14.43; the gcc line is given but was not tested for this release.
+Built and tested with MSVC 14.43 on Windows and gcc 11.4 on Ubuntu 22.04. The code needs nothing
+beyond C11 and the standard library: `-mavx2 -mfma` only match the released Linux binary, and can be
+dropped for a build that runs on any x86-64.
 
 ```
 chordstream                          run the 15 specification tests
@@ -71,6 +99,9 @@ chordstream --ref --tuned song.mid   the Python reference's tuned output, token 
 chordstream --tsv --ref song.mid     machine-readable token table
 chordstream notes.json               notes in sixteenths: {"notes": [[start, end, pitch, voice], ...],
                                      "ts": [[start, numerator, denominator], ...]}
+chordstream --serve --ref            the same JSON, one document per stdin line, answered with
+                                     "#tokens N" and N --tsv rows; the process stays open
+chordstream --debug --ref song.mid   the stages on stderr: bars (B), steps (S), keys (K)
 ```
 
 Without `--ref` the C follows its own literal reading of the specification, which differs from the Python
