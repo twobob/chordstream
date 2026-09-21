@@ -147,6 +147,8 @@ typedef struct {
 
 static chordstream_options_t g_opts;
 
+static FILE *g_debug = NULL;
+
 typedef struct {
     double start16;
     double end16;
@@ -593,11 +595,21 @@ static double template_score(const double *w, int r, int t, bool has_bass, uint8
     return score;
 }
 
+static double sum12_ref(const double *a) {
+    double r = ((a[0] + a[1]) + (a[2] + a[3])) + ((a[4] + a[5]) + (a[6] + a[7]));
+    for (int i = 8; i < 12; ++i) r += a[i];
+    return r;
+}
+
+static double sum12(const double *a) {
+    if (g_opts.ref) return sum12_ref(a);
+    double r = 0.0;
+    for (int p = 0; p < 12; ++p) r += a[p];
+    return r;
+}
+
 static bool normalise_hist(const double *hist12, double *w) {
-    double sum_h = 0.0;
-    for (int p = 0; p < 12; ++p) {
-        sum_h += hist12[p];
-    }
+    double sum_h = sum12(hist12);
     if (sum_h < CHORDSTREAM_EPSILON) {
         return false;
     }
@@ -903,12 +915,11 @@ static void resolve_pedal_points(step_t *steps, int n_steps, const bar_t *bars,
 
                 double group_hist[12] = {0};
                 double removed[12];
-                double sum = 0.0;
                 for (int k = g; k <= h; ++k) {
                     step_histogram(&steps[k], notes, n_notes, melodic, pedal, removed);
                     for (int p = 0; p < 12; ++p) group_hist[p] += removed[p];
                 }
-                for (int p = 0; p < 12; ++p) sum += group_hist[p];
+                double sum = sum12(group_hist);
 
                 if (sum >= CHORDSTREAM_EPSILON) {
                     fit_result_t r = fit_chord_step(group_hist, false, 0);
@@ -1024,12 +1035,43 @@ static void key_scores(const double *hist12, int whole_piece_best_key, double bo
     }
 }
 
+static void key_scores_ref(const double *h, int whole_piece_best_key, double bonus, double *scores, bool *flat) {
+    double hz[12], sq[12], v[12];
+    double mean = sum12_ref(h) / 12.0;
+    for (int p = 0; p < 12; ++p) { hz[p] = h[p] - mean; sq[p] = hz[p] * hz[p]; }
+    double norm = sqrt(sum12_ref(sq));
+    for (int k = 0; k < 24; ++k) scores[k] = 0.0;
+    *flat = (norm == 0.0);
+    if (*flat) return;
+    for (int p = 0; p < 12; ++p) v[p] = hz[p] / norm;
+    for (int k = 0; k < 24; ++k) {
+        int tonic = (k < 12) ? k : (k - 12);
+        const double *base = g_custom_profile ? ((k < 12) ? g_prof_major : g_prof_minor)
+                           : g_opts.pop_profile ? ((k < 12) ? POP_MAJOR : POP_MINOR)
+                                                : ((k < 12) ? AARDEN_ESSEN_MAJOR : AARDEN_ESSEN_MINOR);
+        double rot[12], xz[12], xsq[12];
+        for (int p = 0; p < 12; ++p) rot[p] = base[(p - tonic + 12) % 12];
+        double m = sum12_ref(rot) / 12.0;
+        for (int p = 0; p < 12; ++p) { xz[p] = rot[p] - m; xsq[p] = xz[p] * xz[p]; }
+        double n = sqrt(sum12_ref(xsq));
+        double sc = 0.0;
+        for (int p = 0; p < 12; ++p) sc += (xz[p] / n) * v[p];
+        scores[k] = sc + (k == whole_piece_best_key ? bonus : 0.0);
+    }
+}
+
 static int argmax_key(const double *scores) {
+    if (g_opts.ref) {
+        double best = scores[0];
+        for (int k = 1; k < 24; ++k) if (scores[k] > best) best = scores[k];
+        for (int k = 0; k < 24; ++k) if (scores[k] >= best - CHORDSTREAM_TIE_EPSILON) return k;
+        return 0;
+    }
     double best_r = -2.0;
     int best_key = 0;
     for (int k = 0; k < 24; ++k) {
 
-        if (g_opts.ref ? scores[k] - best_r > 1e-12 : scores[k] - best_r > CHORDSTREAM_TIE_EPSILON) {
+        if (scores[k] - best_r > CHORDSTREAM_TIE_EPSILON) {
             best_r = scores[k];
             best_key = k;
         }
@@ -1167,7 +1209,13 @@ static int resolve_relative_tie(int best, const double *hist12, const step_t *st
 
 static int choose_key(const double *hist12, int whole_key, double bonus, const step_t *steps, int s_from, int s_to) {
     double scores[24];
-    key_scores(hist12, whole_key, bonus, scores);
+    if (g_opts.ref) {
+        bool flat;
+        key_scores_ref(hist12, whole_key, bonus, scores, &flat);
+        if (flat) return resolve_relative_tie(0, hist12, steps, s_from, s_to);
+    } else {
+        key_scores(hist12, whole_key, bonus, scores);
+    }
     int best = argmax_key(scores);
     int rel = relative_key(best);
     if (fabs(scores[best] - scores[rel]) <= g_opts.key_tie) {
@@ -1226,6 +1274,10 @@ static void estimate_keys(const bar_t *bars, int n_bars, step_t *steps, int n_st
         }
     }
 
+    if (g_opts.ref) {
+        for (int p = 0; p < 12; ++p) whole[p] = 0.0;
+        for (int b = 0; b < n_bars; ++b) for (int p = 0; p < 12; ++p) whole[p] += bar_hist[b * 12 + p];
+    }
     g_n_steps = n_steps;
     int whole_key = choose_key(whole, -1, 0.0, steps, 0, n_steps);
 
@@ -1248,6 +1300,10 @@ static void estimate_keys(const bar_t *bars, int n_bars, step_t *steps, int n_st
         winner[i] = choose_key(hist, whole_key, g_opts.whole_bonus, steps, s_from, s_to);
     }
     apply_key_hysteresis(winner, n_bars, key_out);
+    if (g_debug) {
+        fprintf(g_debug, "WHOLE %d\n", whole_key);
+        for (int i = 0; i < n_bars; ++i) fprintf(g_debug, "K %d %d %d\n", i, winner[i], key_out[i]);
+    }
     free(winner);
     free(bar_hist);
 }
@@ -1309,8 +1365,7 @@ static int merge_steps(const step_t *steps, int n_steps, span_t **out_spans) {
             if (g_opts.ref && i == j) {
 
             } else if (g_opts.ref) {
-                double tot = 0.0;
-                for (int p = 0; p < 12; ++p) tot += hist[p];
+                double tot = sum12(hist);
                 if (tot < CHORDSTREAM_EPSILON) {
                     sp->has_bass = steps[i].has_bass;
                     sp->bass_pitch = steps[i].bass_pitch;
@@ -1413,6 +1468,14 @@ static void emit_spans(const span_t *spans, int n_spans, const bar_t *bars, int 
                 stream_push(out, &cap, chordstream_pack(&u), seg_start, seg_end);
             }
             seg_start = seg_end;
+        }
+    }
+    if (g_opts.ref) {
+        while (out->count > 0) {
+            chordstream_unpacked_t u;
+            chordstream_unpack(out->tokens[out->count - 1], &u);
+            if (u.degree != CHORDSTREAM_DEGREE_SILENCE) break;
+            out->count--;
         }
     }
 }
@@ -1573,6 +1636,19 @@ int chordstream_extract(const chordstream_note_t *notes_in, int n_notes_in,
     int *bar_key = xcalloc((size_t)n_bars, sizeof(int));
     estimate_keys(bars, n_bars, steps, n_steps, notes, n_notes, bar_key);
     for (int i = 0; i < n_steps; ++i) steps[i].key = bar_key[steps[i].bar];
+
+    if (g_debug) {
+        for (int b = 0; b < n_bars; ++b)
+            fprintf(g_debug, "B %d %.4f %.4f %.4f\n", b, bars[b].start, bars[b].len, bars[b].step);
+        for (int i = 0; i < n_steps; ++i) {
+            const step_t *s = &steps[i];
+            double tot = 0.0;
+            for (int p = 0; p < 12; ++p) tot += s->hist[p];
+            fprintf(g_debug, "S %d %d %.4f %.4f %d %d %d %d %.4f\n", i, s->bar, s->start, s->end, (int)s->kind,
+                    s->kind == STEP_CHORD ? s->root : -1, s->kind == STEP_CHORD ? s->tmpl : -1,
+                    s->has_bass ? (int)s->bass_pitch : -1, tot);
+        }
+    }
 
     if (opts.absorb) {
         absorb_single_steps(steps, n_steps, opts.fold_add9);
@@ -1923,17 +1999,9 @@ static int json_read_rows(const char *p, int cols, double **rows) {
     return n;
 }
 
-int chordstream_read_notes_json(const char *path, chordstream_midi_t *out) {
+static int parse_notes_json_text(const char *text, chordstream_midi_t *out) {
     memset(out, 0, sizeof *out);
-    FILE *f = cs_fopen(path, "rb");
-    if (f == NULL) return -1;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
-    long sz = ftell(f);
-    if (sz < 2 || fseek(f, 0, SEEK_SET) != 0) { fclose(f); return -1; }
-    char *text = xcalloc((size_t)sz + 1, 1);
-    if (fread(text, 1, (size_t)sz, f) != (size_t)sz) { fclose(f); free(text); return -1; }
-    fclose(f);
-
+    if (json_find_key_array(text, "notes") == NULL) return -1;
     double *rows = NULL;
     int n = json_read_rows(json_find_key_array(text, "notes"), 4, &rows);
     out->notes = xcalloc((size_t)n + 1, sizeof(chordstream_note_t));
@@ -1957,9 +2025,74 @@ int chordstream_read_notes_json(const char *path, chordstream_midi_t *out) {
         out->n_sigs++;
     }
     free(rows);
-    free(text);
     out->tpq = 4;
     out->n_tracks = 1;
+    return 0;
+}
+
+int chordstream_read_notes_json(const char *path, chordstream_midi_t *out) {
+    memset(out, 0, sizeof *out);
+    FILE *f = cs_fopen(path, "rb");
+    if (f == NULL) return -1;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
+    long sz = ftell(f);
+    if (sz < 2 || fseek(f, 0, SEEK_SET) != 0) { fclose(f); return -1; }
+    char *text = xcalloc((size_t)sz + 1, 1);
+    if (fread(text, 1, (size_t)sz, f) != (size_t)sz) { fclose(f); free(text); return -1; }
+    fclose(f);
+    int rc = parse_notes_json_text(text, out);
+    free(text);
+    return rc;
+}
+
+static char *read_stdin_line(size_t *len_out) {
+    size_t cap = 1 << 16, len = 0;
+    char *buf = xrealloc(NULL, cap);
+    for (;;) {
+        if (len + 1 >= cap) {
+            cap *= 2;
+            buf = xrealloc(buf, cap);
+        }
+        if (fgets(buf + len, (int)(cap - len), stdin) == NULL) {
+            if (len == 0) { free(buf); return NULL; }
+            break;
+        }
+        len += strlen(buf + len);
+        if (len > 0 && buf[len - 1] == '\n') break;
+    }
+    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) buf[--len] = 0;
+    *len_out = len;
+    return buf;
+}
+
+static int run_serve(const chordstream_options_t *opts) {
+    size_t len;
+    char *line;
+    while ((line = read_stdin_line(&len)) != NULL) {
+        if (len == 0) { free(line); continue; }
+        chordstream_midi_t doc;
+        if (parse_notes_json_text(line, &doc) != 0) {
+            printf("#error not a notes JSON object\n");
+            fflush(stdout);
+            free(line);
+            continue;
+        }
+        chordstream_stream_t st;
+        chordstream_extract(doc.notes, doc.n_notes, doc.sigs, doc.n_sigs, opts, &st);
+        printf("#tokens %d\n", st.count);
+        for (int i = 0; i < st.count; ++i) {
+            chordstream_unpacked_t u;
+            chordstream_unpack(st.tokens[i], &u);
+            printf("%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%.6f\t%.6f\t%llu\n",
+                   (unsigned)u.tonic, (unsigned)u.mode, (unsigned)u.degree, (unsigned)u.mask, (unsigned)u.bass,
+                   (unsigned)u.bar, (unsigned)u.onset, (unsigned)u.dur, (unsigned)u.barlen, (unsigned)u.cont,
+                   st.sidecar[i].start16, st.sidecar[i].end16, (unsigned long long)st.tokens[i]);
+        }
+        fflush(stdout);
+        chordstream_stream_free(&st);
+        chordstream_midi_free(&doc);
+        free(line);
+    }
     return 0;
 }
 
@@ -2016,10 +2149,11 @@ void chordstream_print_stream(const chordstream_stream_t *st, FILE *out) {
 
 static int run_cli(int argc, char **argv) {
     chordstream_options_t opts = chordstream_default_options();
-    bool quiet = false, dump_notes = false, tsv = false;
+    bool quiet = false, dump_notes = false, tsv = false, serve = false;
     int files = 0;
     for (int a = 1; a < argc; ++a) {
         if (strcmp(argv[a], "--absorb") == 0) { opts.absorb = true; continue; }
+        if (strcmp(argv[a], "--serve") == 0) { serve = true; continue; }
         if (strcmp(argv[a], "--tuned") == 0) {
             bool ref = opts.ref;
             opts = chordstream_tuned_options();
@@ -2052,6 +2186,7 @@ static int run_cli(int argc, char **argv) {
             continue;
         }
         if (strcmp(argv[a], "--dump-notes") == 0) { dump_notes = true; continue; }
+        if (strcmp(argv[a], "--debug") == 0) { g_debug = stderr; continue; }
         if (strcmp(argv[a], "--help") == 0 || strcmp(argv[a], "-h") == 0) {
             printf("usage: chordstream                 run the specification test suite\n"
                    "       chordstream [options] FILE.mid|FILE.notes.json ...\n"
@@ -2061,7 +2196,10 @@ static int run_cli(int argc, char **argv) {
                    "  --keep-add9   emit add9/madd9 instead of folding to triads\n"
                    "  --quiet       summary line per file only\n"
                    "  --tsv         machine-readable token table (no summary line)\n"
+                   "  --serve       persistent mode: one notes-JSON document per stdin line, reply\n"
+                   "                '#tokens N' + N --tsv rows; options apply to every request\n"
                    "  --dump-notes  print the decoded notes instead of extracting\n"
+                   "  --debug       stage dump on stderr: bars (B), steps (S), key winners (K)\n"
                    "  --opt k=v     experimental knob (miss_penalty, extra_penalty, bass_bonus, w_thresh,\n"
                    "                key_window, key_hold, key_retroactive, evidence_runs, key_tie, ev_ratio,\n"
                    "                key_low_weight, key_bass_weight, whole_bonus, power_fallback);\n"
@@ -2117,6 +2255,9 @@ static int run_cli(int argc, char **argv) {
         if (!quiet) chordstream_print_stream(&st, stdout);
         chordstream_stream_free(&st);
         chordstream_midi_free(&midi);
+    }
+    if (serve) {
+        return run_serve(&opts);
     }
     if (files == 0) {
         fprintf(stderr, "no input files\n");
